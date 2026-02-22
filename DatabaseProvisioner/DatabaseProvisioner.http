@@ -1,0 +1,6 @@
+@DatabaseProvisioner_HostAddress = http://localhost:5221
+
+GET {{DatabaseProvisioner_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
