@@ -104,10 +104,14 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
 
                             RESTORE DATABASE [{fullDatabaseName}] FROM DISK = N'{databaseName}.bak'
                             WITH REPLACE, NOUNLOAD,
+                            MAXTRANSFERSIZE = 4194304,
+                            BUFFERCOUNT = 32,
+                            STATS = 10,
                             MOVE N'{databaseName}' TO N'{dataFile}',
                             MOVE N'{databaseName}_log' TO N'{logFile}'
 
                             ALTER DATABASE [{fullDatabaseName}] SET READ_WRITE WITH NO_WAIT;
+                            ALTER DATABASE [{fullDatabaseName}] SET RECOVERY SIMPLE WITH NO_WAIT;
                             """;
 
         await connection.ExecuteAsync(restoreQuery, commandTimeout: 300);
