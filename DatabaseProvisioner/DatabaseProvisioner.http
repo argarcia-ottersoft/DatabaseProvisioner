@@ -1,6 +1,20 @@
 @DatabaseProvisioner_HostAddress = http://localhost:5221
+@ApiKey = CHANGE-ME
 
-GET {{DatabaseProvisioner_HostAddress}}/weatherforecast/
-Accept: application/json
+### Provision a new database (or no-op if exists)
+POST {{DatabaseProvisioner_HostAddress}}/api/provision-database/StaffingLogistics
+Content-Type: application/json
+X-Api-Key: {{ApiKey}}
+
+{}
+
+### Provision with restore from snapshot
+POST {{DatabaseProvisioner_HostAddress}}/api/provision-database/StaffingLogistics
+Content-Type: application/json
+X-Api-Key: {{ApiKey}}
+
+{
+  "restoreFromSnapshot": true
+}
 
 ###

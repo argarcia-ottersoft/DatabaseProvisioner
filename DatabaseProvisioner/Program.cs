@@ -1,41 +1,47 @@
-var builder = WebApplication.CreateBuilder(args);
+using DatabaseProvisioner;
+using DatabaseProvisioningService = DatabaseProvisioner.DatabaseProvisioningService;
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
 builder.Services.AddOpenApi();
+builder.Services.AddSingleton<DatabaseProvisioningService>();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 
 app.UseHttpsRedirection();
+app.UseMiddleware<AuthenticationMiddleware>();
 
-var summaries = new[]
+app.MapPost("/api/provision-database/{id}", async (
+    string id,
+    ProvisionRequest? request,
+    DatabaseProvisioningService service,
+    CancellationToken ct) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+    bool restoreFromSnapshot = request?.RestoreFromSnapshot ?? false;
 
-app.MapGet("/weatherforecast", () =>
+    try
     {
-        var forecast = Enumerable.Range(1, 5).Select(index =>
-                new WeatherForecast
-                (
-                    DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                    Random.Shared.Next(-20, 55),
-                    summaries[Random.Shared.Next(summaries.Length)]
-                ))
-            .ToArray();
-        return forecast;
-    })
-    .WithName("GetWeatherForecast");
+        ProvisionResult result = await service.ProvisionAsync(id, restoreFromSnapshot, ct);
+
+        return result switch
+        {
+            ProvisionResult.Created => Results.Created($"/api/provision-database/{id}", new { database = id, status = "created" }),
+            ProvisionResult.AlreadyExists => Results.Ok(new { database = id, status = "already_exists" }),
+            ProvisionResult.RestoredFromSnapshot => Results.Ok(new { database = id, status = "restored_from_snapshot" }),
+            _ => Results.StatusCode(500)
+        };
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 500);
+    }
+});
 
 app.Run();
 
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
+public record ProvisionRequest(bool RestoreFromSnapshot = false);
