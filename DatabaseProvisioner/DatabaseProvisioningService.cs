@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dapper;
 using Microsoft.Data.SqlClient;
 
@@ -12,6 +13,8 @@ public enum ProvisionResult
 
 public class DatabaseProvisioningService(IConfiguration configuration, ILogger<DatabaseProvisioningService> logger)
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Locks = new();
+
     private string ConnectionString => configuration.GetConnectionString("DefaultConnection")
                                        ?? throw new InvalidOperationException(
                                            "Missing ConnectionStrings:DefaultConnection");
@@ -20,29 +23,38 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
         CancellationToken ct = default)
     {
         var fullDatabaseName = $"{databaseName}_{id}";
+        var semaphore = Locks.GetOrAdd(fullDatabaseName, _ => new SemaphoreSlim(1, 1));
 
-        await using var connection = new SqlConnection(ConnectionString);
-        await connection.OpenAsync(ct);
-
-        var databaseId = await connection.ExecuteScalarAsync<int?>(
-            "SELECT DB_ID(@fullDatabaseName)", new { fullDatabaseName });
-
-        if (databaseId is not null)
+        await semaphore.WaitAsync(ct);
+        try
         {
-            if (!restoreFromSnapshot)
+            await using var connection = new SqlConnection(ConnectionString);
+            await connection.OpenAsync(ct);
+
+            var databaseId = await connection.ExecuteScalarAsync<int?>(
+                "SELECT DB_ID(@fullDatabaseName)", new { fullDatabaseName });
+
+            if (databaseId is not null)
             {
-                logger.LogInformation("Database {Database} already exists, no-op", fullDatabaseName);
-                return ProvisionResult.AlreadyExists;
+                if (!restoreFromSnapshot)
+                {
+                    logger.LogInformation("Database {Database} already exists, no-op", fullDatabaseName);
+                    return ProvisionResult.AlreadyExists;
+                }
+
+                logger.LogInformation("Restoring {Database} from snapshot", fullDatabaseName);
+                await RestoreFromSnapshotAsync(connection, fullDatabaseName);
+                return ProvisionResult.RestoredFromSnapshot;
             }
 
-            logger.LogInformation("Restoring {Database} from snapshot", fullDatabaseName);
-            await RestoreFromSnapshotAsync(connection, fullDatabaseName);
-            return ProvisionResult.RestoredFromSnapshot;
+            logger.LogInformation("Creating {Database} from backup {Backup}", fullDatabaseName, databaseName);
+            await RestoreFromBackupAsync(connection, databaseName, fullDatabaseName);
+            return ProvisionResult.Created;
         }
-
-        logger.LogInformation("Creating {Database} from backup {Backup}", fullDatabaseName, databaseName);
-        await RestoreFromBackupAsync(connection, databaseName, fullDatabaseName);
-        return ProvisionResult.Created;
+        finally
+        {
+            semaphore.Release();
+        }
     }
 
     private static async Task RestoreFromSnapshotAsync(SqlConnection connection, string fullDatabaseName)
