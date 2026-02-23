@@ -1,12 +1,12 @@
 using DatabaseProvisioner;
 using DatabaseProvisioningService = DatabaseProvisioner.DatabaseProvisioningService;
 
-WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<DatabaseProvisioningService>();
 
-WebApplication app = builder.Build();
+var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
@@ -16,23 +16,26 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseMiddleware<AuthenticationMiddleware>();
 
-app.MapPost("/api/provision-database/{id}", async (
+app.MapPost("/{databaseName}/{id}", async (
+    string databaseName,
     string id,
-    ProvisionRequest? request,
+    bool? restoreFromSnapshot,
     DatabaseProvisioningService service,
     CancellationToken ct) =>
 {
-    bool restoreFromSnapshot = request?.RestoreFromSnapshot ?? false;
+    var fullDatabaseName = $"{databaseName}_{id}";
 
     try
     {
-        ProvisionResult result = await service.ProvisionAsync(id, restoreFromSnapshot, ct);
+        var result = await service.ProvisionAsync(databaseName, id, restoreFromSnapshot ?? false, ct);
 
         return result switch
         {
-            ProvisionResult.Created => Results.Created($"/api/provision-database/{id}", new { database = id, status = "created" }),
-            ProvisionResult.AlreadyExists => Results.Ok(new { database = id, status = "already_exists" }),
-            ProvisionResult.RestoredFromSnapshot => Results.Ok(new { database = id, status = "restored_from_snapshot" }),
+            ProvisionResult.Created => Results.Created($"/{databaseName}/{id}",
+                new { database = fullDatabaseName, status = "created" }),
+            ProvisionResult.AlreadyExists => Results.Ok(new { database = fullDatabaseName, status = "already_exists" }),
+            ProvisionResult.RestoredFromSnapshot => Results.Ok(new
+                { database = fullDatabaseName, status = "restored_from_snapshot" }),
             _ => Results.StatusCode(500)
         };
     }
@@ -43,5 +46,3 @@ app.MapPost("/api/provision-database/{id}", async (
 });
 
 app.Run();
-
-public record ProvisionRequest(bool RestoreFromSnapshot = false);
