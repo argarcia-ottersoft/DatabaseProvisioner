@@ -13,22 +13,32 @@ dotnet build
 dotnet run --launch-profile https
 ```
 
-Listens on `https://localhost:3341` and `http://localhost:3340`.
+Listens on `https://localhost:3351` and `http://localhost:3350` in Development. Production (deployed) uses `https://localhost:3341` and `http://localhost:3340`.
+
+## Deployment
+
+Run `deploy.ps1` from the repo root. It stops any running instance, publishes a self-contained exe, copies it to `C:\Services\DatabaseProvisioner`, and starts the new instance:
+
+```powershell
+.\deploy.ps1
+```
 
 ## Project structure
 
 ```
-DatabaseProvisioner/
-  Program.cs                        # Minimal API endpoint definition
-  DatabaseProvisioningService.cs    # Core provisioning logic (restore, snapshot, locking, tracking)
-  AuthenticationMiddleware.cs       # X-Api-Key header validation
-  Scripts/
-    CreateOptimizedBackup.sql       # SQL script to produce an optimized .bak file
-    CreateProvisionedDatabasesTable.sql  # One-time setup: tracking table in master
-    CreateCleanupJob.sql            # One-time setup: SQL Agent Job for stale database cleanup
-  Properties/
-    launchSettings.json
-  appsettings.json                  # Connection string, API key
+DatabaseProvisioner/                 # Repo root
+  deploy.ps1                        # Deployment script (publish + copy to target dir)
+  DatabaseProvisioner/
+    Program.cs                      # Minimal API endpoint definition
+    DatabaseProvisioningService.cs  # Core provisioning logic (restore, snapshot, locking, tracking)
+    AuthenticationMiddleware.cs     # X-Api-Key header validation
+    Scripts/
+      CreateOptimizedBackup.sql     # SQL script to produce an optimized .bak file
+      CreateProvisionedDatabasesTable.sql  # One-time setup: tracking table in master
+      CreateCleanupJob.sql          # One-time setup: SQL Agent Job for stale database cleanup
+    Properties/
+      launchSettings.json
+    appsettings.json                # Connection string, API key
 ```
 
 There is no test project. Test manually with curl against a running instance (see Testing section).
