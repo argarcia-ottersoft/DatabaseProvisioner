@@ -1,9 +1,10 @@
-USE [msdb];
+USE
+[msdb];
 GO
 
 IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'DatabaseProvisioner_Cleanup')
 BEGIN
-    EXEC sp_delete_job @job_name = N'DatabaseProvisioner_Cleanup', @delete_unused_schedule = 1;
+EXEC sp_delete_job @job_name = N'DatabaseProvisioner_Cleanup', @delete_unused_schedule = 1;
 END
 GO
 
@@ -97,7 +98,8 @@ IF NOT EXISTS (
     SELECT 1 FROM sys.dm_server_services WHERE servicename LIKE N'SQL Server Agent%' AND status = 4
 )
 BEGIN
-    EXEC xp_cmdshell 'net start SQLSERVERAGENT', no_output = 1;
-    WAITFOR DELAY '00:00:05';
+EXEC xp_cmdshell 'net start SQLSERVERAGENT', no_output = 1;
+    WAITFOR
+DELAY '00:00:05';
 END
 GO

@@ -143,16 +143,16 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
         try
         {
             await connection.ExecuteAsync("""
-                MERGE master.dbo.ProvisionedDatabases AS target
-                USING (SELECT @fullDatabaseName, @databaseName, @id)
-                    AS source (FullDatabaseName, DatabaseName, AgentId)
-                ON target.FullDatabaseName = source.FullDatabaseName
-                WHEN MATCHED THEN
-                    UPDATE SET LastAccessedUtc = SYSUTCDATETIME()
-                WHEN NOT MATCHED THEN
-                    INSERT (FullDatabaseName, DatabaseName, AgentId)
-                    VALUES (source.FullDatabaseName, source.DatabaseName, source.AgentId);
-                """, new { fullDatabaseName, databaseName, id });
+                                          MERGE master.dbo.ProvisionedDatabases AS target
+                                          USING (SELECT @fullDatabaseName, @databaseName, @id)
+                                              AS source (FullDatabaseName, DatabaseName, AgentId)
+                                          ON target.FullDatabaseName = source.FullDatabaseName
+                                          WHEN MATCHED THEN
+                                              UPDATE SET LastAccessedUtc = SYSUTCDATETIME()
+                                          WHEN NOT MATCHED THEN
+                                              INSERT (FullDatabaseName, DatabaseName, AgentId)
+                                              VALUES (source.FullDatabaseName, source.DatabaseName, source.AgentId);
+                                          """, new { fullDatabaseName, databaseName, id });
         }
         catch (Exception ex)
         {
