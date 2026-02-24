@@ -2,8 +2,9 @@
 .SYNOPSIS
     Deploys DatabaseProvisioner as a self-contained executable.
 .DESCRIPTION
-    Publishes the app, stops any running instance, copies the output to the deployment
-    location, and starts the new instance.
+    Publishes the app, stops any running instance, copies the output (and run.ps1)
+    to the deployment location, then invokes run.ps1 from there to start the service.
+    To restart without redeploying, run run.ps1 from the deployment directory instead.
 .EXAMPLE
     .\deploy.ps1
 #>
@@ -14,6 +15,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $ProjectPath = Join-Path $ProjectRoot "DatabaseProvisioner\DatabaseProvisioner.csproj"
 $StagingPath = Join-Path $ProjectRoot "publish-staging"
+$RunScript = Join-Path $ProjectRoot "run.ps1"
 
 Write-Host "DatabaseProvisioner Deployment" -ForegroundColor Cyan
 Write-Host "  Deploy path: $DeployPath" -ForegroundColor Gray
@@ -34,7 +36,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Publish complete." -ForegroundColor Green
 
-# Stop running instance before deploying
+# Stop running instance before deploying (must happen before file copy)
 $process = Get-Process -Name "DatabaseProvisioner" -ErrorAction SilentlyContinue
 if ($process) {
     Write-Host ""
@@ -51,13 +53,12 @@ New-Item -ItemType Directory -Path $DeployPath -Force | Out-Null
 Write-Host ""
 Write-Host "Deploying to $DeployPath..." -ForegroundColor Yellow
 Copy-Item -Path "$StagingPath\*" -Destination $DeployPath -Recurse -Force
+Copy-Item -Path $RunScript -Destination $DeployPath -Force
 Write-Host "  Deploy complete." -ForegroundColor Green
 
 # Clean up staging
 Remove-Item -Path $StagingPath -Recurse -Force
 
+# Start via run.ps1 in the deployment directory
 Write-Host ""
-$exePath = Join-Path $DeployPath "DatabaseProvisioner.exe"
-Write-Host "Starting $exePath..." -ForegroundColor Yellow
-Start-Process -FilePath $exePath -WorkingDirectory $DeployPath
-Write-Host "  Started." -ForegroundColor Green
+& "$DeployPath\run.ps1" -ServicePath $DeployPath

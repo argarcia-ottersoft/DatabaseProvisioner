@@ -17,17 +17,34 @@ Listens on `http://localhost:3350` in Development. Production (deployed) uses `h
 
 ## Deployment
 
-Run `deploy.ps1` from the repo root. It stops any running instance, publishes a self-contained exe, copies it to `C:\Services\DatabaseProvisioner`, and starts the new instance:
+Two scripts handle deployment and startup:
+
+**Full deploy** — publishes, copies to `C:\Services\DatabaseProvisioner`, and starts the service:
 
 ```powershell
 .\deploy.ps1
+```
+
+`deploy.ps1` also copies `run.ps1` into the deployment directory so it can be used independently.
+
+**Start/restart without redeploying** — use `run.ps1` from the deployment directory (e.g. after a machine restart):
+
+```powershell
+C:\Services\DatabaseProvisioner\run.ps1
+```
+
+`run.ps1` accepts an optional `-ServicePath` parameter (defaults to the directory it lives in):
+
+```powershell
+.\run.ps1 -ServicePath "C:\Services\DatabaseProvisioner"
 ```
 
 ## Project structure
 
 ```
 DatabaseProvisioner/                 # Repo root
-  deploy.ps1                        # Deployment script (publish + copy to target dir)
+  deploy.ps1                        # Publishes, copies to deploy dir (including run.ps1), and starts
+  run.ps1                           # Stops any running instance and starts the exe (copied to deploy dir)
   DatabaseProvisioner/
     Program.cs                      # Minimal API endpoint definition
     DatabaseProvisioningService.cs  # Core provisioning logic (restore, snapshot, locking, tracking)
