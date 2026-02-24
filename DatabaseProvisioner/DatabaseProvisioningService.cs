@@ -34,22 +34,32 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
             var databaseId = await connection.ExecuteScalarAsync<int?>(
                 "SELECT DB_ID(@fullDatabaseName)", new { fullDatabaseName });
 
+            ProvisionResult result;
+
             if (databaseId is not null)
             {
                 if (!restoreFromSnapshot)
                 {
                     logger.LogInformation("Database {Database} already exists, no-op", fullDatabaseName);
-                    return ProvisionResult.AlreadyExists;
+                    result = ProvisionResult.AlreadyExists;
                 }
-
-                logger.LogInformation("Restoring {Database} from snapshot", fullDatabaseName);
-                await RestoreFromSnapshotAsync(connection, fullDatabaseName);
-                return ProvisionResult.RestoredFromSnapshot;
+                else
+                {
+                    logger.LogInformation("Restoring {Database} from snapshot", fullDatabaseName);
+                    await RestoreFromSnapshotAsync(connection, fullDatabaseName);
+                    result = ProvisionResult.RestoredFromSnapshot;
+                }
+            }
+            else
+            {
+                logger.LogInformation("Creating {Database} from backup {Backup}", fullDatabaseName, databaseName);
+                await RestoreFromBackupAsync(connection, databaseName, fullDatabaseName);
+                result = ProvisionResult.Created;
             }
 
-            logger.LogInformation("Creating {Database} from backup {Backup}", fullDatabaseName, databaseName);
-            await RestoreFromBackupAsync(connection, databaseName, fullDatabaseName);
-            return ProvisionResult.Created;
+            await TrackProvisionedDatabaseAsync(connection, fullDatabaseName, databaseName, id);
+
+            return result;
         }
         finally
         {
@@ -125,5 +135,28 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
                              """;
 
         await connection.ExecuteAsync(snapshotQuery, commandTimeout: 120);
+    }
+
+    private async Task TrackProvisionedDatabaseAsync(SqlConnection connection, string fullDatabaseName,
+        string databaseName, string id)
+    {
+        try
+        {
+            await connection.ExecuteAsync("""
+                MERGE master.dbo.ProvisionedDatabases AS target
+                USING (SELECT @fullDatabaseName, @databaseName, @id)
+                    AS source (FullDatabaseName, DatabaseName, AgentId)
+                ON target.FullDatabaseName = source.FullDatabaseName
+                WHEN MATCHED THEN
+                    UPDATE SET LastAccessedUtc = SYSUTCDATETIME()
+                WHEN NOT MATCHED THEN
+                    INSERT (FullDatabaseName, DatabaseName, AgentId)
+                    VALUES (source.FullDatabaseName, source.DatabaseName, source.AgentId);
+                """, new { fullDatabaseName, databaseName, id });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to upsert tracking row for {Database}", fullDatabaseName);
+        }
     }
 }

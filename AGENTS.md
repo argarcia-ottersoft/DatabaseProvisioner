@@ -20,10 +20,12 @@ Listens on `https://localhost:3341` and `http://localhost:3340`.
 ```
 DatabaseProvisioner/
   Program.cs                        # Minimal API endpoint definition
-  DatabaseProvisioningService.cs    # Core provisioning logic (restore, snapshot, locking)
+  DatabaseProvisioningService.cs    # Core provisioning logic (restore, snapshot, locking, tracking)
   AuthenticationMiddleware.cs       # X-Api-Key header validation
   Scripts/
     CreateOptimizedBackup.sql       # SQL script to produce an optimized .bak file
+    CreateProvisionedDatabasesTable.sql  # One-time setup: tracking table in master
+    CreateCleanupJob.sql            # One-time setup: SQL Agent Job for stale database cleanup
   Properties/
     launchSettings.json
   appsettings.json                  # Connection string, API key
@@ -61,6 +63,7 @@ The resulting database is named `{databaseName}_{id}` with a snapshot `{database
 2. `DB_ID()` checks if the database already exists.
 3. If not, `RESTORE DATABASE` creates it from `{databaseName}.bak` using optimized buffer settings (`MAXTRANSFERSIZE = 4194304, BUFFERCOUNT = 32`), then sets `RECOVERY SIMPLE` and creates a database snapshot.
 4. If it exists and `restoreFromSnapshot=true`, the snapshot is used to reset the database to its initial state.
+5. After any successful operation, the service upserts a row in `master.dbo.ProvisionedDatabases` with the current UTC timestamp. This tracking is non-critical — failures are logged as warnings without affecting the API response.
 
 ### Assumptions the SQL relies on
 
@@ -101,6 +104,32 @@ Run `Scripts/CreateOptimizedBackup.sql` against the live database to produce a c
 ```bash
 sqlcmd -i DatabaseProvisioner/Scripts/CreateOptimizedBackup.sql
 ```
+
+## Database cleanup
+
+Agent databases are short-lived (1–7 days). A SQL Server Agent Job (`DatabaseProvisioner_Cleanup`) runs daily at 3:00 AM and drops databases not accessed in the last 7 days.
+
+### Tracking table
+
+`master.dbo.ProvisionedDatabases` records every provisioned database with a `LastAccessedUtc` timestamp that is updated on every API call (provision, no-op, or snapshot restore). The cleanup job uses this timestamp rather than `sys.databases.create_date`, so actively-used databases are never dropped prematurely.
+
+### Cleanup job behavior
+
+1. Drops snapshot (`*_dbss`) and parent databases where `LastAccessedUtc` is older than 1 day.
+2. Deletes the corresponding tracking rows.
+3. Removes orphaned tracking rows (database was manually dropped).
+4. Falls back to `sys.databases.create_date` for untracked databases matching the naming pattern (handles databases created before the tracking table existed).
+
+### One-time setup
+
+Run these scripts once against the SQL Server instance to create the tracking table and the Agent Job:
+
+```bash
+sqlcmd -i DatabaseProvisioner/Scripts/CreateProvisionedDatabasesTable.sql
+sqlcmd -i DatabaseProvisioner/Scripts/CreateCleanupJob.sql
+```
+
+Verify the job exists in SQL Server Agent > Jobs > `DatabaseProvisioner_Cleanup`. Both scripts are idempotent.
 
 ## Code conventions
 
