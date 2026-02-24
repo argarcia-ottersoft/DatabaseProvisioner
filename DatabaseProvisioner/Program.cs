@@ -13,7 +13,6 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
 app.UseMiddleware<AuthenticationMiddleware>();
 
 app.MapPost("/{databaseName}/{id}", async (

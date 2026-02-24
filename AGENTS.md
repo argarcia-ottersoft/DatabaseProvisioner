@@ -10,10 +10,10 @@ The service runs on a shared Windows host alongside SQL Server. It is the only c
 
 ```bash
 dotnet build
-dotnet run --launch-profile https
+dotnet run --launch-profile http
 ```
 
-Listens on `https://localhost:3351` and `http://localhost:3350` in Development. Production (deployed) uses `https://localhost:3341` and `http://localhost:3340`.
+Listens on `http://localhost:3350` in Development. Production (deployed) uses `http://0.0.0.0:3340` (accessible on LAN).
 
 ## Deployment
 
@@ -84,19 +84,19 @@ The resulting database is named `{databaseName}_{id}` with a snapshot `{database
 
 ## Testing
 
-Start the app, then test with curl. Use `-k` to skip TLS verification in dev.
+Start the app, then test with curl.
 
 ```bash
 # Provision a new database
-curl -s -k -X POST "https://localhost:3341/StaffingLogistics/20260223X3869" \
+curl -s -X POST "http://localhost:3350/StaffingLogistics/20260223X3869" \
   -H "X-Api-Key: g9HcwjgTMlGbGR15Vy9fB24vV06o24rS"
 
 # Idempotent re-call (returns already_exists)
-curl -s -k -X POST "https://localhost:3341/StaffingLogistics/20260223X3869" \
+curl -s -X POST "http://localhost:3350/StaffingLogistics/20260223X3869" \
   -H "X-Api-Key: g9HcwjgTMlGbGR15Vy9fB24vV06o24rS"
 
 # Restore from snapshot
-curl -s -k -X POST "https://localhost:3341/StaffingLogistics/20260223X3869?restoreFromSnapshot=true" \
+curl -s -X POST "http://localhost:3350/StaffingLogistics/20260223X3869?restoreFromSnapshot=true" \
   -H "X-Api-Key: g9HcwjgTMlGbGR15Vy9fB24vV06o24rS"
 ```
 
