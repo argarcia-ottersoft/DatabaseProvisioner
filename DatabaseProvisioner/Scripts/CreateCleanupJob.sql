@@ -1,5 +1,4 @@
-USE
-[msdb];
+USE [msdb];
 GO
 
 IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'DatabaseProvisioner_Cleanup')
@@ -46,12 +45,12 @@ WHERE LastAccessedUtc < @cutoff;
 DELETE FROM master.dbo.ProvisionedDatabases
 WHERE DB_ID(FullDatabaseName) IS NULL;
 
--- 3. Drop untracked databases that match the provisioned naming pattern (e.g. created
---    before the tracking table existed). Falls back to sys.databases.create_date.
+-- 3. Drop untracked databases that match the provisioned naming pattern (agent IDs
+--    look like 20260223X3869). Falls back to sys.databases.create_date.
 SELECT @sql = @sql +
     N''DROP DATABASE ['' + d.name + N''];'' + CHAR(13)
 FROM sys.databases d
-WHERE d.name LIKE N''%[_]%[_]dbss''
+WHERE d.name LIKE N''%[_][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]X%[_]dbss''
   AND d.create_date < @cutoff
   AND NOT EXISTS (
       SELECT 1 FROM master.dbo.ProvisionedDatabases p
@@ -61,9 +60,8 @@ WHERE d.name LIKE N''%[_]%[_]dbss''
 SELECT @sql = @sql +
     N''DROP DATABASE ['' + d.name + N''];'' + CHAR(13)
 FROM sys.databases d
-WHERE d.name LIKE N''%[_]%''
+WHERE d.name LIKE N''%[_][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]X%''
   AND d.name NOT LIKE N''%[_]dbss''
-  AND d.name NOT IN (N''master'', N''model'', N''msdb'', N''tempdb'')
   AND d.create_date < @cutoff
   AND NOT EXISTS (
       SELECT 1 FROM master.dbo.ProvisionedDatabases p
@@ -98,8 +96,7 @@ IF NOT EXISTS (
     SELECT 1 FROM sys.dm_server_services WHERE servicename LIKE N'SQL Server Agent%' AND status = 4
 )
 BEGIN
-EXEC xp_cmdshell 'net start SQLSERVERAGENT', no_output = 1;
-    WAITFOR
-DELAY '00:00:05';
+    EXEC xp_cmdshell 'net start SQLSERVERAGENT', no_output;
+    WAITFOR DELAY '00:00:05';
 END
 GO
