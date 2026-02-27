@@ -25,6 +25,10 @@ GO
 USE [StaffingLogistics];
 GO
 
+-- Truncate ClinicianEventTimesheetHistory to reduce backup size.
+TRUNCATE TABLE dbo.ClinicianEventTimesheetHistory;
+GO;
+
 -- Delete ScheduleShiftItem rows not referenced by any ClinicianEventShift.
 -- Cannot TRUNCATE due to FK constraints, so delete in batches.
 DECLARE
