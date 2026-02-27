@@ -8,8 +8,6 @@
 --
 -- Usage:
 --   sqlcmd -i CreateOptimizedBackup.sql
---   -- or --
---   sqlcmd -i CreateOptimizedBackup.sql -v BackupPath="D:\Backups\StaffingLogistics.bak"
 
 USE
 [master];
@@ -62,15 +60,10 @@ GO
 
 -- Create a compressed backup, overwriting any existing file.
 -- COMPRESSION typically achieves 4-6x reduction on this database.
-DECLARE
-@backupPath nvarchar(500) = COALESCE(
-    '$(BackupPath)',
-    (SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(500)) + '\StaffingLogistics.bak')
-);
 
 BACKUP
 DATABASE [StaffingLogistics]
-TO DISK = @backupPath
+TO DISK = 'StaffingLogistics.bak'
 WITH
     FORMAT,
     COMPRESSION,
@@ -84,5 +77,5 @@ GO
 -- ALTER DATABASE [StaffingLogistics] SET RECOVERY FULL;
 -- GO
 
-PRINT 'Backup complete. Verify the file at the backup path above.';
+PRINT 'Backup complete. Verify the file at the backup path.';
 GO
