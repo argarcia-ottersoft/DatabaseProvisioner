@@ -168,7 +168,7 @@ sqlcmd -i DatabaseProvisioner/Scripts/CreateOptimizedBackup.sql
 
 ## Database cleanup
 
-Agent databases are short-lived (1–7 days). A SQL Server Agent Job (`DatabaseProvisioner_Cleanup`) runs daily at 3:00 AM and drops databases not accessed in the last 7 days.
+Agent databases are short-lived. A SQL Server Agent Job (`DatabaseProvisioner_Cleanup`) runs hourly and drops databases not accessed in the last 2 hours.
 
 ### Tracking table
 
@@ -176,7 +176,7 @@ Agent databases are short-lived (1–7 days). A SQL Server Agent Job (`DatabaseP
 
 ### Cleanup job behavior
 
-1. Drops snapshot (`*_dbss`) and parent databases where `LastAccessedUtc` is older than 1 day.
+1. Drops snapshot (`*_dbss`) and parent databases where `LastAccessedUtc` is older than 2 hours.
 2. Deletes the corresponding tracking rows.
 3. Removes orphaned tracking rows (database was manually dropped).
 4. Falls back to `sys.databases.create_date` for untracked databases matching the naming pattern (handles databases created before the tracking table existed).

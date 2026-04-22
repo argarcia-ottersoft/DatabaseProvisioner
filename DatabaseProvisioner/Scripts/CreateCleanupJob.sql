@@ -9,7 +9,7 @@ GO
 
 EXEC sp_add_job
     @job_name = N'DatabaseProvisioner_Cleanup',
-    @description = N'Drops provisioned agent databases not accessed in the last 1 day. Handles orphaned tracking rows and untracked databases.';
+    @description = N'Drops provisioned agent databases not accessed in the last 2 hours. Handles orphaned tracking rows and untracked databases.';
 GO
 
 EXEC sp_add_jobstep
@@ -18,7 +18,7 @@ EXEC sp_add_jobstep
     @subsystem = N'TSQL',
     @database_name = N'master',
     @command = N'
-DECLARE @cutoff DATETIME2 = DATEADD(DAY, -1, SYSUTCDATETIME());
+DECLARE @cutoff DATETIME2 = DATEADD(HOUR, -2, SYSUTCDATETIME());
 DECLARE @sql NVARCHAR(MAX) = N'''';
 DECLARE @dropped INT = 0;
 
@@ -76,15 +76,18 @@ PRINT N''DatabaseProvisioner_Cleanup completed. Tracked databases dropped: '' + 
 GO
 
 EXEC sp_add_schedule
-    @schedule_name = N'DatabaseProvisioner_Cleanup_Daily',
-    @freq_type = 4,          -- daily
+    @schedule_name = N'DatabaseProvisioner_Cleanup_Hourly',
+    @freq_type = 4,          -- recurring schedule with hourly subday interval below
     @freq_interval = 1,
-    @active_start_time = 030000;  -- 3:00 AM
+    @freq_subday_type = 8,   -- hours
+    @freq_subday_interval = 1,
+    @active_start_time = 000000,
+    @active_end_time = 235959;
 GO
 
 EXEC sp_attach_schedule
     @job_name = N'DatabaseProvisioner_Cleanup',
-    @schedule_name = N'DatabaseProvisioner_Cleanup_Daily';
+    @schedule_name = N'DatabaseProvisioner_Cleanup_Hourly';
 GO
 
 EXEC sp_add_jobserver
