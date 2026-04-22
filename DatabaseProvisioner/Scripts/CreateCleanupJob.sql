@@ -22,56 +22,188 @@ DECLARE @cutoff DATETIME2 = DATEADD(HOUR, -2, SYSUTCDATETIME());
 DECLARE @sql NVARCHAR(MAX) = N'''';
 DECLARE @dropped INT = 0;
 
--- 1. Drop tracked databases that have not been accessed within the retention period.
---    Snapshots must be dropped before their parent database.
-SELECT @sql = @sql +
-    N''IF DB_ID(N'''''' + FullDatabaseName + N''_dbss'''') IS NOT NULL DROP DATABASE ['' + FullDatabaseName + N''_dbss];'' + CHAR(13) +
-    N''IF DB_ID(N'''''' + FullDatabaseName + N'''''') IS NOT NULL DROP DATABASE ['' + FullDatabaseName + N''];'' + CHAR(13)
+DECLARE @staleTracked TABLE
+(
+    FullDatabaseName NVARCHAR(256) NOT NULL PRIMARY KEY,
+    AgentId NVARCHAR(128) NOT NULL,
+    LoginName NVARCHAR(256) NOT NULL
+);
+
+DECLARE @orphanedTracked TABLE
+(
+    FullDatabaseName NVARCHAR(256) NOT NULL PRIMARY KEY,
+    AgentId NVARCHAR(128) NOT NULL,
+    LoginName NVARCHAR(256) NOT NULL
+);
+
+DECLARE @staleUntrackedDatabases TABLE
+(
+    FullDatabaseName NVARCHAR(256) NOT NULL PRIMARY KEY,
+    AgentId NVARCHAR(128) NULL,
+    LoginName NVARCHAR(256) NULL
+);
+
+DECLARE @staleUntrackedSnapshots TABLE
+(
+    SnapshotName NVARCHAR(256) NOT NULL PRIMARY KEY
+);
+
+DECLARE @loginCleanupCandidates TABLE
+(
+    LoginName NVARCHAR(256) NOT NULL PRIMARY KEY
+);
+
+-- 1. Gather tracked databases that are past the retention period.
+INSERT INTO @staleTracked (FullDatabaseName, AgentId, LoginName)
+SELECT
+    FullDatabaseName,
+    AgentId,
+    N''logisticsDev_'' + AgentId
 FROM master.dbo.ProvisionedDatabases
 WHERE LastAccessedUtc < @cutoff;
 
-IF @sql <> N''''
-BEGIN
-    EXEC sp_executesql @sql;
-    SET @sql = N'''';
-END
-
-SELECT @dropped = COUNT(*) FROM master.dbo.ProvisionedDatabases WHERE LastAccessedUtc < @cutoff;
-
-DELETE FROM master.dbo.ProvisionedDatabases
-WHERE LastAccessedUtc < @cutoff;
-
--- 2. Clean up orphaned tracking rows where the database was already dropped manually.
-DELETE FROM master.dbo.ProvisionedDatabases
+-- 2. Gather orphaned tracking rows where the database is already gone.
+INSERT INTO @orphanedTracked (FullDatabaseName, AgentId, LoginName)
+SELECT
+    FullDatabaseName,
+    AgentId,
+    N''logisticsDev_'' + AgentId
+FROM master.dbo.ProvisionedDatabases
 WHERE DB_ID(FullDatabaseName) IS NULL;
 
--- 3. Drop untracked databases that match the provisioned naming pattern (agent IDs
---    look like 20260223X3869). Falls back to sys.databases.create_date.
-SELECT @sql = @sql +
-    N''DROP DATABASE ['' + d.name + N''];'' + CHAR(13)
-FROM sys.databases d
-WHERE d.name LIKE N''%[_][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]X%[_]dbss''
-  AND d.create_date < @cutoff
-  AND NOT EXISTS (
-      SELECT 1 FROM master.dbo.ProvisionedDatabases p
-      WHERE p.FullDatabaseName + N''_dbss'' = d.name
-  );
-
-SELECT @sql = @sql +
-    N''DROP DATABASE ['' + d.name + N''];'' + CHAR(13)
+-- 3. Gather untracked parent databases that match the provisioned naming pattern.
+INSERT INTO @staleUntrackedDatabases (FullDatabaseName, AgentId, LoginName)
+SELECT
+    d.name,
+    CASE
+        WHEN CHARINDEX(N''_'', REVERSE(d.name)) > 0
+        THEN RIGHT(d.name, CHARINDEX(N''_'', REVERSE(d.name)) - 1)
+    END,
+    CASE
+        WHEN CHARINDEX(N''_'', REVERSE(d.name)) > 0
+        THEN N''logisticsDev_'' + RIGHT(d.name, CHARINDEX(N''_'', REVERSE(d.name)) - 1)
+    END
 FROM sys.databases d
 WHERE d.name LIKE N''%[_][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]X%''
   AND d.name NOT LIKE N''%[_]dbss''
   AND d.create_date < @cutoff
   AND NOT EXISTS (
-      SELECT 1 FROM master.dbo.ProvisionedDatabases p
+      SELECT 1
+      FROM master.dbo.ProvisionedDatabases p
       WHERE p.FullDatabaseName = d.name
   );
 
-IF @sql <> N''''
-    EXEC sp_executesql @sql;
+-- 4. Gather lingering untracked snapshots so they can be dropped as well.
+INSERT INTO @staleUntrackedSnapshots (SnapshotName)
+SELECT d.name
+FROM sys.databases d
+WHERE d.name LIKE N''%[_][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]X%[_]dbss''
+  AND d.create_date < @cutoff
+  AND NOT EXISTS (
+      SELECT 1
+      FROM master.dbo.ProvisionedDatabases p
+      WHERE p.FullDatabaseName + N''_dbss'' = d.name
+  );
 
-PRINT N''DatabaseProvisioner_Cleanup completed. Tracked databases dropped: '' + CAST(@dropped AS NVARCHAR(10));
+-- 5. Drop tracked and untracked databases. Snapshots must be dropped first.
+DECLARE @fullDatabaseName NVARCHAR(256);
+DECLARE @snapshotName NVARCHAR(256);
+DECLARE @loginName NVARCHAR(256);
+
+DECLARE database_cleanup CURSOR LOCAL FAST_FORWARD FOR
+SELECT FullDatabaseName FROM @staleTracked
+UNION
+SELECT FullDatabaseName FROM @staleUntrackedDatabases;
+
+OPEN database_cleanup;
+FETCH NEXT FROM database_cleanup INTO @fullDatabaseName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = N''IF DB_ID(@snapshotDatabaseName) IS NOT NULL DROP DATABASE ''
+             + QUOTENAME(@fullDatabaseName + N''_dbss'') + N'';'' + CHAR(13)
+             + N''IF DB_ID(@databaseName) IS NOT NULL DROP DATABASE ''
+             + QUOTENAME(@fullDatabaseName) + N'';'';
+
+    EXEC sp_executesql
+        @sql,
+        N''@snapshotDatabaseName SYSNAME, @databaseName SYSNAME'',
+        @snapshotDatabaseName = @fullDatabaseName + N''_dbss'',
+        @databaseName = @fullDatabaseName;
+    FETCH NEXT FROM database_cleanup INTO @fullDatabaseName;
+END
+
+CLOSE database_cleanup;
+DEALLOCATE database_cleanup;
+
+DECLARE snapshot_cleanup CURSOR LOCAL FAST_FORWARD FOR
+SELECT SnapshotName FROM @staleUntrackedSnapshots;
+
+OPEN snapshot_cleanup;
+FETCH NEXT FROM snapshot_cleanup INTO @snapshotName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = N''IF DB_ID(@databaseName) IS NOT NULL DROP DATABASE ''
+             + QUOTENAME(@snapshotName) + N'';'';
+
+    EXEC sp_executesql
+        @sql,
+        N''@databaseName SYSNAME'',
+        @databaseName = @snapshotName;
+    FETCH NEXT FROM snapshot_cleanup INTO @snapshotName;
+END
+
+CLOSE snapshot_cleanup;
+DEALLOCATE snapshot_cleanup;
+
+SELECT @dropped = (SELECT COUNT(*) FROM @staleTracked) + (SELECT COUNT(*) FROM @staleUntrackedDatabases);
+
+-- 6. Remove tracking rows after database cleanup.
+DELETE p
+FROM master.dbo.ProvisionedDatabases p
+JOIN @staleTracked st ON st.FullDatabaseName = p.FullDatabaseName;
+
+DELETE p
+FROM master.dbo.ProvisionedDatabases p
+JOIN @orphanedTracked ot ON ot.FullDatabaseName = p.FullDatabaseName;
+
+-- 7. Collect candidate logins for cleanup.
+INSERT INTO @loginCleanupCandidates (LoginName)
+SELECT DISTINCT LoginName
+FROM (
+    SELECT LoginName FROM @staleTracked
+    UNION ALL
+    SELECT LoginName FROM @orphanedTracked
+    UNION ALL
+    SELECT LoginName
+    FROM @staleUntrackedDatabases
+    WHERE LoginName IS NOT NULL
+) candidates;
+
+-- 8. Drop matching logins for cleaned-up databases.
+DECLARE login_cleanup CURSOR LOCAL FAST_FORWARD FOR
+SELECT LoginName
+FROM @loginCleanupCandidates;
+
+OPEN login_cleanup;
+FETCH NEXT FROM login_cleanup INTO @loginName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    IF SUSER_ID(@loginName) IS NOT NULL
+    BEGIN
+        SET @sql = N''DROP LOGIN '' + QUOTENAME(@loginName) + N'';'';
+        EXEC sp_executesql @sql;
+    END
+
+    FETCH NEXT FROM login_cleanup INTO @loginName;
+END
+
+CLOSE login_cleanup;
+DEALLOCATE login_cleanup;
+
+PRINT N''DatabaseProvisioner_Cleanup completed. Databases dropped: '' + CAST(@dropped AS NVARCHAR(10));
 ';
 GO
 

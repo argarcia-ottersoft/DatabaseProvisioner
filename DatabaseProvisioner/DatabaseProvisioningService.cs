@@ -35,6 +35,7 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
                 "SELECT DB_ID(@fullDatabaseName)", new { fullDatabaseName });
 
             ProvisionResult result;
+            var createdDatabase = false;
 
             if (databaseId is not null)
             {
@@ -53,8 +54,16 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
             else
             {
                 logger.LogInformation("Creating {Database} from backup {Backup}", fullDatabaseName, databaseName);
-                await RestoreFromBackupAsync(connection, databaseName, fullDatabaseName, id);
+                await RestoreFromBackupAsync(connection, databaseName, fullDatabaseName);
+                createdDatabase = true;
                 result = ProvisionResult.Created;
+            }
+
+            await EnsureSqlLoginAndDatabaseUserAsync(connection, fullDatabaseName, id);
+
+            if (createdDatabase)
+            {
+                await CreateSnapshotAsync(connection, databaseName, fullDatabaseName);
             }
 
             await TrackProvisionedDatabaseAsync(connection, fullDatabaseName, databaseName, id);
@@ -87,7 +96,7 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
     }
 
     private static async Task RestoreFromBackupAsync(SqlConnection connection, string databaseName,
-        string fullDatabaseName, string id)
+        string fullDatabaseName)
     {
         const string dataPathQuery =
             "SELECT TOP 1 physical_name FROM sys.database_files WHERE type_desc = 'ROWS' ORDER BY file_id";
@@ -107,11 +116,6 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
 
         var dataFile = Path.Combine(dataDirectory, $"{fullDatabaseName}.mdf");
         var logFile = Path.Combine(logDirectory, $"{fullDatabaseName}.ldf");
-        var snapshotFile = Path.Combine(dataDirectory, $"{fullDatabaseName}_dbss.ss");
-        var containedUserName = $"logisticsDev_{id}";
-        var containedUserNameIdentifier = EscapeSqlIdentifier(containedUserName);
-        var containedUserNameLiteral = EscapeSqlLiteral(containedUserName);
-        var containedUserPasswordLiteral = EscapeSqlLiteral($"L0gisticsp@ss2_{id}");
 
         var restoreQuery = $"""
                             USE [master];
@@ -129,38 +133,89 @@ public class DatabaseProvisioningService(IConfiguration configuration, ILogger<D
                             """;
 
         await connection.ExecuteAsync(restoreQuery, commandTimeout: 300);
+    }
 
-        var containedUserQuery = $"""
-                                  USE [master];
+    private static async Task EnsureSqlLoginAndDatabaseUserAsync(SqlConnection connection, string fullDatabaseName,
+        string id)
+    {
+        var fullDatabaseNameIdentifier = EscapeSqlIdentifier(fullDatabaseName);
+        var loginName = $"logisticsDev_{id}";
+        var loginNameIdentifier = EscapeSqlIdentifier(loginName);
+        var loginNameLiteral = EscapeSqlLiteral(loginName);
+        var loginPasswordLiteral = EscapeSqlLiteral($"L0gisticsp@ss2_{id}");
 
-                                  ALTER DATABASE [{fullDatabaseName}] SET CONTAINMENT = PARTIAL;
+        var loginQuery = $"""
+                          USE [master];
 
-                                  USE [{fullDatabaseName}];
+                          IF EXISTS (
+                              SELECT 1
+                              FROM sys.server_principals
+                              WHERE name = N'{loginNameLiteral}'
+                          )
+                          BEGIN
+                              ALTER LOGIN [{loginNameIdentifier}]
+                              WITH PASSWORD = N'{loginPasswordLiteral}',
+                                   DEFAULT_DATABASE = [{fullDatabaseNameIdentifier}];
+                          END
+                          ELSE
+                          BEGIN
+                              CREATE LOGIN [{loginNameIdentifier}]
+                              WITH PASSWORD = N'{loginPasswordLiteral}',
+                                   DEFAULT_DATABASE = [{fullDatabaseNameIdentifier}];
+                          END
 
-                                  IF NOT EXISTS (
-                                      SELECT 1
-                                      FROM sys.database_principals
-                                      WHERE name = N'{containedUserNameLiteral}'
-                                  )
-                                  BEGIN
-                                      CREATE USER [{containedUserNameIdentifier}]
-                                      WITH PASSWORD = N'{containedUserPasswordLiteral}';
-                                  END
+                          USE [{fullDatabaseNameIdentifier}];
 
-                                  IF NOT EXISTS (
-                                      SELECT 1
-                                      FROM sys.database_role_members drm
-                                      JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id
-                                      JOIN sys.database_principals u ON drm.member_principal_id = u.principal_id
-                                      WHERE r.name = N'db_owner'
-                                        AND u.name = N'{containedUserNameLiteral}'
-                                  )
-                                  BEGIN
-                                      ALTER ROLE [db_owner] ADD MEMBER [{containedUserNameIdentifier}];
-                                  END
-                                  """;
+                          IF EXISTS (
+                              SELECT 1
+                              FROM sys.database_principals
+                              WHERE name = N'{loginNameLiteral}'
+                                AND authentication_type_desc = 'DATABASE'
+                          )
+                          BEGIN
+                              DROP USER [{loginNameIdentifier}];
+                          END
 
-        await connection.ExecuteAsync(containedUserQuery, commandTimeout: 120);
+                          IF EXISTS (
+                              SELECT 1
+                              FROM sys.database_principals
+                              WHERE name = N'{loginNameLiteral}'
+                          )
+                          BEGIN
+                              ALTER USER [{loginNameIdentifier}] WITH LOGIN = [{loginNameIdentifier}];
+                          END
+                          ELSE
+                          BEGIN
+                              CREATE USER [{loginNameIdentifier}] FOR LOGIN [{loginNameIdentifier}];
+                          END
+
+                          IF NOT EXISTS (
+                              SELECT 1
+                              FROM sys.database_role_members drm
+                              JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id
+                              JOIN sys.database_principals u ON drm.member_principal_id = u.principal_id
+                              WHERE r.name = N'db_owner'
+                                AND u.name = N'{loginNameLiteral}'
+                          )
+                          BEGIN
+                              ALTER ROLE [db_owner] ADD MEMBER [{loginNameIdentifier}];
+                          END
+                          """;
+
+        await connection.ExecuteAsync(loginQuery, commandTimeout: 120);
+    }
+
+    private static async Task CreateSnapshotAsync(SqlConnection connection, string databaseName,
+        string fullDatabaseName)
+    {
+        var dataPathQuery =
+            "SELECT TOP 1 physical_name FROM sys.database_files WHERE type_desc = 'ROWS' ORDER BY file_id";
+        var masterFile = await connection.ExecuteScalarAsync<string>(dataPathQuery)
+                         ?? throw new InvalidOperationException(
+                             "Could not determine data directory from master database files");
+        var dataDirectory = Path.GetDirectoryName(masterFile)
+                            ?? throw new InvalidOperationException("Could not resolve data directory");
+        var snapshotFile = Path.Combine(dataDirectory, $"{fullDatabaseName}_dbss.ss");
 
         var snapshotQuery = $"""
                              USE [master];

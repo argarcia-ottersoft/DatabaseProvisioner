@@ -2,7 +2,7 @@
 
 ## Project overview
 
-DatabaseProvisioner is an ASP.NET Core 9 minimal API that provisions isolated SQL Server databases for Cursor Background/Cloud agents. Each agent gets its own database restored from a shared `.bak` file, with a contained `db_owner` user created for that database and a database snapshot created for fast reset.
+DatabaseProvisioner is an ASP.NET Core 9 minimal API that provisions isolated SQL Server databases for Cursor Background/Cloud agents. Each agent gets its own database restored from a shared `.bak` file, with a server-level SQL login created for that database, the login's `DEFAULT_DATABASE` pointed at the provisioned database, and a database snapshot created for fast reset.
 
 The service runs on a shared Windows host alongside SQL Server. It is the only consumer of these databases.
 
@@ -75,9 +75,9 @@ Header: X-Api-Key: <value from appsettings.json>
 
 The resulting database is named `{databaseName}_{id}` with a snapshot `{databaseName}_{id}_dbss`.
 
-Each newly created database also gets a contained SQL user:
+Each provisioned database is paired with a SQL Server login and a database user mapped to that login:
 
-- Username: `logisticsDev_{id}`
+- Login/User: `logisticsDev_{id}`
 - Password: `L0gisticsp@ss2_{id}`
 
 ### Responses
@@ -93,9 +93,12 @@ Each newly created database also gets a contained SQL user:
 
 1. A per-database `SemaphoreSlim` serializes concurrent requests for the same `{databaseName}_{id}`, preventing duplicate restore attempts.
 2. `DB_ID()` checks if the database already exists.
-3. If not, `RESTORE DATABASE` creates it from `{databaseName}.bak` using optimized buffer settings (`MAXTRANSFERSIZE = 4194304, BUFFERCOUNT = 32`), then sets `RECOVERY SIMPLE`, enables `CONTAINMENT = PARTIAL`, creates contained user `logisticsDev_{id}`, adds that user to `db_owner`, and finally creates a database snapshot.
-4. If it exists and `restoreFromSnapshot=true`, the snapshot is used to reset the database to its initial state.
-5. After any successful operation, the service upserts a row in `master.dbo.ProvisionedDatabases` with the current UTC timestamp. This tracking is non-critical — failures are logged as warnings without affecting the API response.
+3. If not, `RESTORE DATABASE` creates it from `{databaseName}.bak` using optimized buffer settings (`MAXTRANSFERSIZE = 4194304, BUFFERCOUNT = 32`) and sets `RECOVERY SIMPLE`.
+4. The service ensures a SQL Server login `logisticsDev_{id}` exists with password `L0gisticsp@ss2_{id}` and `DEFAULT_DATABASE = [{databaseName}_{id}]`, ensures a database user mapped `FOR LOGIN` exists in the provisioned database, and ensures that user is a member of `db_owner`.
+5. If the database already existed, the same login/user step still runs so repeated provisioning repairs missing logins, resets the password, and realigns the login's default database.
+6. If the database was newly created, a database snapshot is created after the login-mapped user is in place so snapshot restores preserve the user mapping and role membership.
+7. If it exists and `restoreFromSnapshot=true`, the snapshot is used to reset the database to its initial state before the login/user mapping is re-checked.
+8. After any successful operation, the service upserts a row in `master.dbo.ProvisionedDatabases` with the current UTC timestamp. This tracking is non-critical — failures are logged as warnings without affecting the API response.
 
 ### Assumptions the SQL relies on
 
@@ -103,7 +106,8 @@ Each newly created database also gets a contained SQL user:
 - The backup's logical data file is named `{databaseName}` and log file is `{databaseName}_log`. If not, SQL Server will return an error — there is no pre-validation.
 - Physical `.mdf`/`.ldf` paths are derived from `sys.database_files` on the master database.
 - The snapshot `NAME` parameter references the logical data file name from the backup (`{databaseName}`), not the full database name.
-- SQL Server already has `contained database authentication` enabled at the instance level before the API provisions contained users.
+- SQL Server allows SQL authentication logins for client connections (Mixed Mode), since provisioned users now connect through server-level SQL logins instead of contained database users.
+- The service account still needs enough SQL Server privileges to `RESTORE DATABASE`, `CREATE LOGIN`, `ALTER LOGIN`, `CREATE USER`, and manage role membership.
 
 ## Testing
 
@@ -123,18 +127,23 @@ curl -s -X POST "http://localhost:3350/StaffingLogistics/20260223X3869?restoreFr
   -H "X-Api-Key: g9HcwjgTMlGbGR15Vy9fB24vV06o24rS"
 ```
 
-Verify the contained user after provisioning:
+Verify the SQL login and mapped database user after provisioning:
 
 ```sql
-SELECT containment_desc
-FROM sys.databases
-WHERE name = N'StaffingLogistics_20260223X3869';
+SELECT name, default_database_name
+FROM sys.sql_logins
+WHERE name = N'logisticsDev_20260223X3869';
 
 USE [StaffingLogistics_20260223X3869];
 
-SELECT name, type_desc
-FROM sys.database_principals
-WHERE name = N'logisticsDev_20260223X3869';
+SELECT
+    dp.name,
+    dp.type_desc,
+    dp.authentication_type_desc,
+    sp.name AS LoginName
+FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+WHERE dp.name = N'logisticsDev_20260223X3869';
 
 SELECT r.name AS RoleName, u.name AS UserName
 FROM sys.database_role_members drm
@@ -144,18 +153,21 @@ WHERE r.name = N'db_owner'
   AND u.name = N'logisticsDev_20260223X3869';
 ```
 
-The contained credentials for this example are:
+The SQL login credentials for this example are:
 
 - Username: `logisticsDev_20260223X3869`
 - Password: `L0gisticsp@ss2_20260223X3869`
 
-After making a test data change, call the snapshot restore endpoint again and rerun the queries above to confirm the contained user still exists after restore.
+In SSMS or another SQL client, leaving `Database Name` as `<default>` should now connect to `StaffingLogistics_20260223X3869` because the login's `DEFAULT_DATABASE` is set during provisioning.
+
+After making a test data change, call the snapshot restore endpoint again and rerun the queries above to confirm the mapped user still exists after restore.
 
 To clean up test databases:
 
 ```sql
 DROP DATABASE [StaffingLogistics_20260223X3869_dbss];
 DROP DATABASE [StaffingLogistics_20260223X3869];
+DROP LOGIN [logisticsDev_20260223X3869];
 ```
 
 ## Creating an optimized backup
@@ -179,7 +191,8 @@ Agent databases are short-lived. A SQL Server Agent Job (`DatabaseProvisioner_Cl
 1. Drops snapshot (`*_dbss`) and parent databases where `LastAccessedUtc` is older than 2 hours.
 2. Deletes the corresponding tracking rows.
 3. Removes orphaned tracking rows (database was manually dropped).
-4. Falls back to `sys.databases.create_date` for untracked databases matching the naming pattern (handles databases created before the tracking table existed).
+4. Drops the matching SQL login `logisticsDev_{id}` after stale database cleanup.
+5. Falls back to `sys.databases.create_date` for untracked databases matching the naming pattern (handles databases created before the tracking table existed) and also cleans up the matching login.
 
 ### One-time setup
 
@@ -204,4 +217,4 @@ Verify the job exists in SQL Server Agent > Jobs > `DatabaseProvisioner_Cleanup`
 ## Security notes
 
 - `appsettings.json` contains the API key in plaintext. Do not commit secrets to public repositories. The key shown in the repo is for the internal dev/staging server only.
-- The connection string uses `Trusted_Connection=True` (Windows auth). The app must run under an account with SQL Server sysadmin privileges to perform `RESTORE DATABASE`.
+- The connection string uses `Trusted_Connection=True` (Windows auth). The app must run under an account with SQL Server sysadmin privileges to perform `RESTORE DATABASE` and manage SQL logins.
