@@ -2,7 +2,7 @@
 
 ## Project overview
 
-DatabaseProvisioner is an ASP.NET Core 9 minimal API that provisions isolated SQL Server databases for Cursor Background/Cloud agents. Each agent gets its own database restored from a shared `.bak` file, with a database snapshot created for fast reset.
+DatabaseProvisioner is an ASP.NET Core 9 minimal API that provisions isolated SQL Server databases for Cursor Background/Cloud agents. Each agent gets its own database restored from a shared `.bak` file, with a contained `db_owner` user created for that database and a database snapshot created for fast reset.
 
 The service runs on a shared Windows host alongside SQL Server. It is the only consumer of these databases.
 
@@ -75,6 +75,11 @@ Header: X-Api-Key: <value from appsettings.json>
 
 The resulting database is named `{databaseName}_{id}` with a snapshot `{databaseName}_{id}_dbss`.
 
+Each newly created database also gets a contained SQL user:
+
+- Username: `logisticsDev_{id}`
+- Password: `L0gisticsp@ss2_{id}`
+
 ### Responses
 
 | Status | Meaning |
@@ -88,7 +93,7 @@ The resulting database is named `{databaseName}_{id}` with a snapshot `{database
 
 1. A per-database `SemaphoreSlim` serializes concurrent requests for the same `{databaseName}_{id}`, preventing duplicate restore attempts.
 2. `DB_ID()` checks if the database already exists.
-3. If not, `RESTORE DATABASE` creates it from `{databaseName}.bak` using optimized buffer settings (`MAXTRANSFERSIZE = 4194304, BUFFERCOUNT = 32`), then sets `RECOVERY SIMPLE` and creates a database snapshot.
+3. If not, `RESTORE DATABASE` creates it from `{databaseName}.bak` using optimized buffer settings (`MAXTRANSFERSIZE = 4194304, BUFFERCOUNT = 32`), then sets `RECOVERY SIMPLE`, enables `CONTAINMENT = PARTIAL`, creates contained user `logisticsDev_{id}`, adds that user to `db_owner`, and finally creates a database snapshot.
 4. If it exists and `restoreFromSnapshot=true`, the snapshot is used to reset the database to its initial state.
 5. After any successful operation, the service upserts a row in `master.dbo.ProvisionedDatabases` with the current UTC timestamp. This tracking is non-critical — failures are logged as warnings without affecting the API response.
 
@@ -98,6 +103,7 @@ The resulting database is named `{databaseName}_{id}` with a snapshot `{database
 - The backup's logical data file is named `{databaseName}` and log file is `{databaseName}_log`. If not, SQL Server will return an error — there is no pre-validation.
 - Physical `.mdf`/`.ldf` paths are derived from `sys.database_files` on the master database.
 - The snapshot `NAME` parameter references the logical data file name from the backup (`{databaseName}`), not the full database name.
+- SQL Server already has `contained database authentication` enabled at the instance level before the API provisions contained users.
 
 ## Testing
 
@@ -116,6 +122,34 @@ curl -s -X POST "http://localhost:3350/StaffingLogistics/20260223X3869" \
 curl -s -X POST "http://localhost:3350/StaffingLogistics/20260223X3869?restoreFromSnapshot=true" \
   -H "X-Api-Key: g9HcwjgTMlGbGR15Vy9fB24vV06o24rS"
 ```
+
+Verify the contained user after provisioning:
+
+```sql
+SELECT containment_desc
+FROM sys.databases
+WHERE name = N'StaffingLogistics_20260223X3869';
+
+USE [StaffingLogistics_20260223X3869];
+
+SELECT name, type_desc
+FROM sys.database_principals
+WHERE name = N'logisticsDev_20260223X3869';
+
+SELECT r.name AS RoleName, u.name AS UserName
+FROM sys.database_role_members drm
+JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id
+JOIN sys.database_principals u ON drm.member_principal_id = u.principal_id
+WHERE r.name = N'db_owner'
+  AND u.name = N'logisticsDev_20260223X3869';
+```
+
+The contained credentials for this example are:
+
+- Username: `logisticsDev_20260223X3869`
+- Password: `L0gisticsp@ss2_20260223X3869`
+
+After making a test data change, call the snapshot restore endpoint again and rerun the queries above to confirm the contained user still exists after restore.
 
 To clean up test databases:
 
