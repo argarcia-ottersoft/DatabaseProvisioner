@@ -109,6 +109,7 @@ WHERE d.name LIKE N''%[_][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]X%[_]dbss''
 DECLARE @fullDatabaseName NVARCHAR(256);
 DECLARE @snapshotName NVARCHAR(256);
 DECLARE @loginName NVARCHAR(256);
+DECLARE @snapshotParam SYSNAME;
 
 DECLARE database_cleanup CURSOR LOCAL FAST_FORWARD FOR
 SELECT FullDatabaseName FROM @staleTracked
@@ -120,15 +121,21 @@ FETCH NEXT FROM database_cleanup INTO @fullDatabaseName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    SET @sql = N''IF DB_ID(@snapshotDatabaseName) IS NOT NULL DROP DATABASE ''
-             + QUOTENAME(@fullDatabaseName + N''_dbss'') + N'';'' + CHAR(13)
-             + N''IF DB_ID(@databaseName) IS NOT NULL DROP DATABASE ''
-             + QUOTENAME(@fullDatabaseName) + N'';'';
+    SET @snapshotParam = @fullDatabaseName + N''_dbss'';
+    SET @sql = CONCAT(
+        N''IF DB_ID(@snapshotDatabaseName) IS NOT NULL DROP DATABASE '',
+        QUOTENAME(@snapshotParam),
+        N'';'',
+        CHAR(13),
+        N''IF DB_ID(@databaseName) IS NOT NULL DROP DATABASE '',
+        QUOTENAME(@fullDatabaseName),
+        N'';''
+    );
 
     EXEC sp_executesql
         @sql,
         N''@snapshotDatabaseName SYSNAME, @databaseName SYSNAME'',
-        @snapshotDatabaseName = @fullDatabaseName + N''_dbss'',
+        @snapshotDatabaseName = @snapshotParam,
         @databaseName = @fullDatabaseName;
     FETCH NEXT FROM database_cleanup INTO @fullDatabaseName;
 END
@@ -144,8 +151,11 @@ FETCH NEXT FROM snapshot_cleanup INTO @snapshotName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    SET @sql = N''IF DB_ID(@databaseName) IS NOT NULL DROP DATABASE ''
-             + QUOTENAME(@snapshotName) + N'';'';
+    SET @sql = CONCAT(
+        N''IF DB_ID(@databaseName) IS NOT NULL DROP DATABASE '',
+        QUOTENAME(@snapshotName),
+        N'';''
+    );
 
     EXEC sp_executesql
         @sql,
